@@ -81,7 +81,7 @@ class HttpReadAloudService : BaseReadAloudService(),
                 contentList.forEachIndexed { index, item ->
                     if (isActive) {
                         val fileName =
-                            md5SpeakFileName(it.url, AppConfig.ttsSpeechRate.toString(), item)
+                                md5SpeakFileName(it.url, AppConfig.ttsSpeechRate.toString(), item)
 
                         if (hasSpeakFile(fileName)) { //已经下载好的语音缓存
                             if (index == nowSpeak) {
@@ -105,10 +105,18 @@ class HttpReadAloudService : BaseReadAloudService(),
 
                                     val file = getSpeakFileAsMd5IfNotExist(fileName)
                                     //val file = getSpeakFile(index)
+
                                     file.writeBytes(bytes)
-                                    removeSpeakCacheFile(fileName)
+
 
                                     val fis = FileInputStream(file)
+
+                                    // 用来检测下载的文件是否为可正常播放的音频 （如果不是的话抛出异常，没找到更秒的办法，先这么着吧）
+                                    MediaPlayer().apply {
+                                        setDataSource(fis.fd)
+                                        prepare()
+                                        release()
+                                    }
 
                                     if (index == nowSpeak) {
                                         @Suppress("BlockingMethodInNonBlockingContext")
@@ -116,19 +124,19 @@ class HttpReadAloudService : BaseReadAloudService(),
                                     }
                                 }
                             } catch (e: SocketTimeoutException) {
-                                removeSpeakCacheFile(fileName)
-                                toastOnUi("tts接口超时，尝试重新获取")
+                                LogUtils.d("downloadAudio()", "Interface timeout")
                                 downloadAudio()
                             } catch (e: ConnectException) {
-                                removeSpeakCacheFile(fileName)
-                                toastOnUi("网络错误")
+                                LogUtils.e("downloadAudio()", "Network error")
                             } catch (e: IOException) {
                                 val file = getSpeakFileAsMd5(fileName)
                                 if (file.exists()) {
                                     FileUtils.deleteFile(file.absolutePath)
                                 }
-                                toastOnUi("tts文件解析错误")
+                                LogUtils.e("downloadAudio()", "Audio parsing error [${e.message}]")
                             } catch (e: Exception) {
+                                LogUtils.e("downloadAudio()", "Unknown error [${e.message}]")
+                            }finally {
                                 removeSpeakCacheFile(fileName)
                             }
                         }
@@ -261,6 +269,22 @@ class HttpReadAloudService : BaseReadAloudService(),
     override fun onError(mp: MediaPlayer?, what: Int, extra: Int): Boolean {
         LogUtils.d("mp", "what:$what extra:$extra")
         if (what == -38 && extra == 0) {
+            return true
+        }
+        if (extra == MediaPlayer.MEDIA_ERROR_IO ||
+                extra == MediaPlayer.MEDIA_ERROR_MALFORMED ||
+                extra == MediaPlayer.MEDIA_ERROR_UNSUPPORTED ||
+                extra == MediaPlayer.MEDIA_ERROR_TIMED_OUT ||
+                extra == -2147483648) {
+            ReadAloud.httpTTS?.let {
+                //当正常朗读音频文件时出现文件错误导致停止朗读，则先删除缓存文件（不然可能会导致一直卡在某处）
+                val fileName = md5SpeakFileName(it.url, AppConfig.ttsSpeechRate.toString(), contentList[nowSpeak])
+                val file = getSpeakFileAsMd5(fileName)
+                if (file.exists()) {
+                    FileUtils.deleteFile(file.absolutePath)
+                }
+            }
+            LogUtils.e("MediaPlayer", "Error: Audio parsing error [MediaPlayer.MEDIA_ERROR][$extra]")
             return true
         }
         handler.postDelayed({
